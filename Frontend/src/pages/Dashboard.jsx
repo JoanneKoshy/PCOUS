@@ -19,8 +19,11 @@ export default function Dashboard() {
   const [liveHRV, setLiveHRV]   = useState(null)
   const [liveTemp, setLiveTemp] = useState(null)
 
-  // Stores final averages per day separately so they never get wiped
   const [averages, setAverages] = useState({})
+
+  // ── NEW: LH states ──
+  const [lhResult, setLhResult]   = useState(null)
+  const [lhLoading, setLhLoading] = useState(false)
 
   const pollRef = useRef(null)
 
@@ -46,7 +49,8 @@ export default function Dashboard() {
     setActiveDayIndex(newIndex)
   }
 
-  const startReading = () => {
+  // Day 1 — polls real ESP32 via /api/latest
+  const startRealReading = () => {
     if (isRunning) return
     setIsRunning(true)
     setLiveHR(null)
@@ -66,7 +70,36 @@ export default function Dashboard() {
     }, 1000)
   }
 
-  const stopReading = async () => {
+  // Days 2/3/4 — generates dummy readings locally
+  const startDummyReading = () => {
+    if (isRunning) return
+    setIsRunning(true)
+    setLiveHR(null)
+    setLiveHRV(null)
+    setLiveTemp(null)
+
+    let hr   = 72 + Math.random() * 10
+    let hrv  = 45 + Math.random() * 15
+    let temp = 36.4 + Math.random() * 0.3
+
+    pollRef.current = setInterval(() => {
+      hr   = Math.max(60, Math.min(100, hr   + (Math.random() - 0.5) * 2))
+      hrv  = Math.max(30, Math.min(80,  hrv  + (Math.random() - 0.5) * 3))
+      temp = Math.max(36.0, Math.min(37.2, temp + (Math.random() - 0.5) * 0.05))
+
+      setLiveHR(hr.toFixed(1))
+      setLiveHRV(hrv.toFixed(1))
+      setLiveTemp(temp.toFixed(2))
+    }, 1000)
+  }
+
+  const startReading = () => {
+    if (activeDayIndex === 0) startRealReading()
+    else startDummyReading()
+  }
+
+  // Day 1 stop — calls Flask to get real average
+  const stopRealReading = async () => {
     clearInterval(pollRef.current)
     setIsRunning(false)
 
@@ -76,8 +109,11 @@ export default function Dashboard() {
 
       console.log("Day close response:", data)
 
-      // Save averages into a separate object keyed by day index
-      // This never gets wiped unlike days[]
+      if (data.error) {
+        alert("Error from server: " + data.error)
+        return
+      }
+
       setAverages(prev => ({
         ...prev,
         [activeDayIndex]: {
@@ -90,12 +126,80 @@ export default function Dashboard() {
 
     } catch (e) {
       console.error("Stop error:", e)
+      alert("Could not reach server: " + e.message)
     }
 
-    // Clear live values but keep activeDayIndex so averages show
     setLiveHR(null)
     setLiveHRV(null)
     setLiveTemp(null)
+  }
+
+  // Days 2/3/4 stop — calls Flask simulate to get day-specific avg
+  const stopDummyReading = async () => {
+    clearInterval(pollRef.current)
+    setIsRunning(false)
+
+    try {
+      const res  = await fetch(`${SERVER}/api/day/simulate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ day: activeDayIndex + 1 })
+      })
+      const data = await res.json()
+
+      console.log(`Simulated Day ${activeDayIndex + 1} response:`, data)
+
+      setAverages(prev => ({
+        ...prev,
+        [activeDayIndex]: {
+          avgHR:   data.avg_hr,
+          avgHRV:  data.avg_hrv,
+          avgTemp: data.avg_temp,
+          samples: "sim",
+        }
+      }))
+
+    } catch (e) {
+      console.error("Simulate stop error:", e)
+      alert("Could not reach server: " + e.message)
+    }
+
+    setLiveHR(null)
+    setLiveHRV(null)
+    setLiveTemp(null)
+  }
+
+  const stopReading = () => {
+    if (activeDayIndex === 0) stopRealReading()
+    else stopDummyReading()
+  }
+
+  // ── NEW: LH analyze function ──
+  const analyzeLH = async (file) => {
+    setLhImage(file)
+    setLhLoading(true)
+    setLhResult(null)
+
+    try {
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        const base64 = e.target.result.split(",")[1]
+
+        const res  = await fetch(`${SERVER}/api/lh/analyze`, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ image: base64 })
+        })
+        const data = await res.json()
+        console.log("LH result:", data)
+        setLhResult(data)
+        setLhLoading(false)
+      }
+      reader.readAsDataURL(file)
+    } catch (e) {
+      console.error("LH analyze error:", e)
+      setLhLoading(false)
+    }
   }
 
   const completedCount = Object.keys(averages).length
@@ -184,9 +288,9 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Start / Stop buttons */}
+          {/* Start / Stop — all days */}
           {activeDayIndex !== null && (
-            <div className="mb-4">
+            <div className="mb-4 flex items-center gap-3">
               {!isRunning ? (
                 <button
                   onClick={startReading}
@@ -202,13 +306,21 @@ export default function Dashboard() {
                   ■ Stop & Save
                 </button>
               )}
+              {activeDayIndex === 0 && (
+                <span className="text-xs opacity-50">📡 Live ESP32</span>
+              )}
+              {activeDayIndex > 0 && (
+                <span className="text-xs opacity-50">🔁 Simulated</span>
+              )}
             </div>
           )}
 
           {/* LIVE display while running */}
           {isRunning && (
             <div className="bg-white/10 rounded-2xl p-4 border border-white/20 mb-4">
-              <p className="text-sm opacity-70 mb-3">📡 Live from ESP32...</p>
+              <p className="text-sm opacity-70 mb-3">
+                {activeDayIndex === 0 ? "📡 Live from ESP32..." : "🔁 Simulated reading..."}
+              </p>
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div>
                   <p className="text-3xl font-bold">{liveHR ?? "..."}</p>
@@ -230,7 +342,8 @@ export default function Dashboard() {
           {!isRunning && activeDayIndex !== null && averages[activeDayIndex] && (
             <div className="bg-green-500/20 rounded-2xl p-4 border border-green-400/50 mb-4">
               <p className="text-sm text-green-300 font-medium mb-3">
-                ✅ Day {activeDayIndex + 1} Complete — {averages[activeDayIndex].samples} samples
+                ✅ Day {activeDayIndex + 1} Complete
+                {averages[activeDayIndex].samples === "sim" ? " (Simulated)" : ` — ${averages[activeDayIndex].samples} samples`}
               </p>
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div>
@@ -249,21 +362,62 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* LH Upload Day 3 */}
+          {/* ── LH Strip Analysis — Day 3 only (UPDATED) ── */}
           {activeDayIndex === 2 && !isRunning && (
-            <div className="mt-2">
-              <p className="text-sm opacity-70 mb-1">Upload LH Strip (optional)</p>
+            <div className="mt-2 bg-white/10 rounded-2xl p-4 border border-yellow-400/30">
+              <p className="text-sm text-yellow-300 mb-2">🧪 LH Strip Analysis (Day 3)</p>
+              <p className="text-xs opacity-60 mb-3">Upload your LH strip photo for ovulation detection</p>
+
               <input
                 type="file"
                 accept="image/*"
-                onChange={(e) => setLhImage(e.target.files[0])}
-                className="text-sm"
+                onChange={(e) => e.target.files[0] && analyzeLH(e.target.files[0])}
+                className="text-sm w-full mb-3"
               />
+
+              {lhLoading && (
+                <p className="text-sm text-yellow-300 animate-pulse">🔍 Analyzing strip...</p>
+              )}
+
+              {lhResult && !lhLoading && (
+                <div className={`mt-3 rounded-xl p-3 border ${
+                  lhResult.result === "positive"   ? "bg-green-500/20 border-green-400/50" :
+                  lhResult.result === "borderline" ? "bg-yellow-500/20 border-yellow-400/50" :
+                  lhResult.result === "error"      ? "bg-red-500/20 border-red-400/50" :
+                                                     "bg-white/10 border-white/20"
+                }`}>
+                  <p className="text-sm font-semibold mb-1">
+                    {lhResult.result === "positive"   ? "✅ LH Positive"   :
+                     lhResult.result === "borderline" ? "⚠️ LH Borderline" :
+                     lhResult.result === "error"      ? "❌ Error"         :
+                                                        "❌ LH Negative"}
+                  </p>
+                  <p className="text-xs opacity-80 mb-2">{lhResult.message}</p>
+                  {lhResult.result !== "error" && (
+                    <>
+                      <p className="text-xs opacity-60 mb-1">Confidence: {lhResult.confidence}%</p>
+                      <div className="w-full bg-white/20 rounded-full h-2 mb-2">
+                        <div
+                          className={`h-2 rounded-full transition-all ${
+                            lhResult.confidence >= 90 ? "bg-green-400" :
+                            lhResult.confidence >= 50 ? "bg-yellow-400" :
+                                                        "bg-red-400"
+                          }`}
+                          style={{ width: `${lhResult.confidence}%` }}
+                        />
+                      </div>
+                      <p className="text-xs opacity-50">
+                        T/C ratio: {lhResult.ratio} | Lines detected: {lhResult.peaks_found}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
           <p className="text-sm opacity-50 mt-4">
-            Click + to add a day, select it, then press Start Reading.
+            Day 1 uses live ESP32 sensor. Days 2–4 use simulated readings.
           </p>
         </div>
 
