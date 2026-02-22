@@ -1,5 +1,8 @@
 # PCO-US Multi-Signal Ovulation Intelligence System
 
+![Uploading Gemini_Generated_Image_93nr8693nr8693nr.png…]()
+
+
 ## Problem Statement
 The reliability of ovulation tracking is a critical issue for individuals and healthcare providers. Traditional methods often lack precision, leading to inaccurate predictions of fertile windows and difficulties in family planning. The PCO-US system addresses these challenges by providing a robust solution that leverages modern technology.
 
