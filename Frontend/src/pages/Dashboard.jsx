@@ -4,7 +4,7 @@ import { auth, db } from "../firebase"
 import { doc, getDoc } from "firebase/firestore"
 import { useEffect, useState, useRef } from "react"
 
-const SERVER = "http://192.168.2.181:5000"
+const SERVER = "http://192.168.2.145:5000"
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -21,9 +21,13 @@ export default function Dashboard() {
 
   const [averages, setAverages] = useState({})
 
-  // ── NEW: LH states ──
+  // ── LH states ──
   const [lhResult, setLhResult]   = useState(null)
   const [lhLoading, setLhLoading] = useState(false)
+
+  // ── Phase states ──
+  const [phase, setPhase]           = useState(null)
+  const [phaseLoading, setPhaseLoading] = useState(false)
 
   const pollRef = useRef(null)
 
@@ -174,7 +178,7 @@ export default function Dashboard() {
     else stopDummyReading()
   }
 
-  // ── NEW: LH analyze function ──
+  // ── LH analyze function ──
   const analyzeLH = async (file) => {
     setLhImage(file)
     setLhLoading(true)
@@ -200,6 +204,28 @@ export default function Dashboard() {
       console.error("LH analyze error:", e)
       setLhLoading(false)
     }
+  }
+
+  // ── Phase evaluate function ──
+  const evaluatePhase = async () => {
+    setPhaseLoading(true)
+    try {
+      const res  = await fetch(`${SERVER}/api/phase/evaluate`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lh_result:    lhResult?.result ?? "negative",
+          stress_level: profile?.stress_level ?? "Low",
+          cycle_gap:    parseInt(profile?.avg_cycle_gap) || 28
+        })
+      })
+      const data = await res.json()
+      console.log("Phase result:", data)
+      setPhase(data)
+    } catch (e) {
+      console.error("Phase eval error:", e)
+    }
+    setPhaseLoading(false)
   }
 
   const completedCount = Object.keys(averages).length
@@ -362,7 +388,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* ── LH Strip Analysis — Day 3 only (UPDATED) ── */}
+          {/* LH Strip Analysis — Day 3 only */}
           {activeDayIndex === 2 && !isRunning && (
             <div className="mt-2 bg-white/10 rounded-2xl p-4 border border-yellow-400/30">
               <p className="text-sm text-yellow-300 mb-2">🧪 LH Strip Analysis (Day 3)</p>
@@ -421,31 +447,127 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* RIGHT – PHASE */}
+        {/* RIGHT – PHASE (updated with phase engine) */}
         <div className="col-span-3 bg-white/10 backdrop-blur-lg rounded-3xl p-6 shadow-lg border border-white/20">
           <h2 className="text-xl font-semibold mb-4">Current Phase</h2>
-          <div className="bg-white/20 rounded-2xl p-4 backdrop-blur-md border border-white/20">
-            <p className="text-lg font-semibold mb-2">Baseline Establishing</p>
-            <p className="text-sm opacity-80">
-              System requires 3 days of data before activation.
-            </p>
-            <div className="mt-4">
-              <p className="text-sm">Confidence</p>
-              <div className="w-full bg-white/20 rounded-full h-3 mt-1">
-                <div
-                  className="bg-white h-3 rounded-full transition-all duration-500"
-                  style={{ width: `${(completedCount / 3) * 100}%` }}
-                />
-              </div>
-              <p className="text-xs opacity-60 mt-1">{completedCount}/3 days complete</p>
-            </div>
-          </div>
 
-          <div className="mt-6">
+          {!phase ? (
+            <>
+              <div className="bg-white/20 rounded-2xl p-4 backdrop-blur-md border border-white/20 mb-4">
+                <p className="text-lg font-semibold mb-2">Baseline Establishing</p>
+                <p className="text-sm opacity-80">
+                  Complete readings then evaluate phase.
+                </p>
+                <div className="mt-4">
+                  <p className="text-sm">Confidence</p>
+                  <div className="w-full bg-white/20 rounded-full h-3 mt-1">
+                    <div
+                      className="bg-white h-3 rounded-full transition-all duration-500"
+                      style={{ width: `${(completedCount / 3) * 100}%` }}
+                    />
+                  </div>
+                  <p className="text-xs opacity-60 mt-1">{completedCount}/3 days complete</p>
+                </div>
+              </div>
+
+              {completedCount >= 2 && (
+                <button
+                  onClick={evaluatePhase}
+                  disabled={phaseLoading}
+                  className="w-full py-2 bg-purple-500 hover:bg-purple-600 rounded-xl font-medium transition disabled:opacity-50"
+                >
+                  {phaseLoading ? "Analysing..." : "🧠 Evaluate Phase"}
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              {/* Phase result card */}
+              <div className={`rounded-2xl p-4 border mb-4 ${
+                phase.color === "green"  ? "bg-green-500/20  border-green-400/50"  :
+                phase.color === "yellow" ? "bg-yellow-500/20 border-yellow-400/50" :
+                phase.color === "red"    ? "bg-red-500/20    border-red-400/50"    :
+                phase.color === "blue"   ? "bg-blue-500/20   border-blue-400/50"   :
+                                           "bg-purple-500/20 border-purple-400/50"
+              }`}>
+                <p className="text-lg font-bold mb-1">{phase.emoji} {phase.phase}</p>
+
+                <p className="text-xs opacity-60 mb-1">Confidence: {phase.confidence}%</p>
+                <div className="w-full bg-white/20 rounded-full h-2 mb-3">
+                  <div
+                    className={`h-2 rounded-full transition-all ${
+                      phase.confidence >= 75 ? "bg-green-400"  :
+                      phase.confidence >= 50 ? "bg-yellow-400" :
+                                               "bg-red-400"
+                    }`}
+                    style={{ width: `${phase.confidence}%` }}
+                  />
+                </div>
+
+                {phase.reasons.length > 0 && (
+                  <div className="mb-2">
+                    <p className="text-xs font-semibold opacity-80 mb-1">Indicators:</p>
+                    {phase.reasons.map((r, i) => (
+                      <p key={i} className="text-xs text-green-300">• {r}</p>
+                    ))}
+                  </div>
+                )}
+
+                {phase.warnings.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold opacity-80 mb-1">Notes:</p>
+                    {phase.warnings.map((w, i) => (
+                      <p key={i} className="text-xs text-yellow-300 opacity-80">• {w}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Deltas */}
+              <div className="bg-white/10 rounded-xl p-3 border border-white/10 mb-4">
+                <p className="text-xs opacity-60 mb-2">Changes from baseline</p>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <p className={`text-sm font-bold ${phase.deltas.hr >= 0 ? "text-red-300" : "text-blue-300"}`}>
+                      {phase.deltas.hr >= 0 ? "+" : ""}{phase.deltas.hr}
+                    </p>
+                    <p className="text-[10px] opacity-50">HR</p>
+                  </div>
+                  <div>
+                    <p className={`text-sm font-bold ${phase.deltas.hrv <= 0 ? "text-red-300" : "text-green-300"}`}>
+                      {phase.deltas.hrv >= 0 ? "+" : ""}{phase.deltas.hrv}
+                    </p>
+                    <p className="text-[10px] opacity-50">HRV</p>
+                  </div>
+                  <div>
+                    <p className={`text-sm font-bold ${phase.deltas.temp >= 0 ? "text-red-300" : "text-blue-300"}`}>
+                      {phase.deltas.temp >= 0 ? "+" : ""}{phase.deltas.temp}
+                    </p>
+                    <p className="text-[10px] opacity-50">Temp</p>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={evaluatePhase}
+                className="w-full py-2 bg-white/10 hover:bg-white/20 rounded-xl text-sm transition"
+              >
+                🔄 Re-evaluate
+              </button>
+            </>
+          )}
+
+          {/* Stress Index */}
+          <div className="mt-4">
             <h3 className="text-sm mb-2 opacity-80">Stress Index</h3>
             <div className="bg-white/20 rounded-full h-3">
-              <div className="bg-red-400 h-3 rounded-full w-[60%]" />
+              <div className={`h-3 rounded-full ${
+                profile?.stress_level === "High"   ? "w-[85%] bg-red-400"    :
+                profile?.stress_level === "Medium" ? "w-[55%] bg-orange-400" :
+                                                     "w-[25%] bg-green-400"
+              }`} />
             </div>
+            <p className="text-xs opacity-50 mt-1">{profile?.stress_level || "Low"}</p>
           </div>
         </div>
 

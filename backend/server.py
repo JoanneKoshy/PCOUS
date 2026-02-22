@@ -274,7 +274,131 @@ def analyze_lh():
         "message":     message,
         "peaks_found": len(peaks)
     }), 200
+@app.route("/api/phase/evaluate", methods=["POST"])
+def evaluate_phase():
+    data = request.get_json(force=True)
 
+    lh_result    = data.get("lh_result", "negative")   # "positive", "borderline", "negative"
+    stress_level = data.get("stress_level", "Low")      # from user profile
+    cycle_gap    = data.get("cycle_gap", 28)            # from user profile
+
+    if len(day_summaries) < 2:
+        return jsonify({"error": "Not enough day data"}), 400
+
+    # ── Baseline = average of Day 1 to Day N-1 ──
+    baseline_days = day_summaries[:-1]
+    baseline_hr   = sum(d["avg_hr"]   for d in baseline_days) / len(baseline_days)
+    baseline_hrv  = sum(d["avg_hrv"]  for d in baseline_days) / len(baseline_days)
+    baseline_temp = sum(d["avg_temp"] for d in baseline_days) / len(baseline_days)
+
+    # ── Latest day = comparison day ──
+    latest = day_summaries[-1]
+    hr_delta   = latest["avg_hr"]   - baseline_hr
+    hrv_delta  = latest["avg_hrv"]  - baseline_hrv
+    temp_delta = latest["avg_temp"] - baseline_temp
+
+    print(f"📊 Phase eval | HR delta: {hr_delta:.2f} | HRV delta: {hrv_delta:.2f} | Temp delta: {temp_delta:.2f}")
+    print(f"   LH: {lh_result} | Stress: {stress_level} | Cycle gap: {cycle_gap}")
+
+    # ── Confidence scoring (weighted) ──
+    score = 0.0
+    reasons = []
+    warnings = []
+
+    # Temp shift → 40%
+    if temp_delta >= 0.2:
+        score += 40
+        reasons.append(f"Sustained temp elevation (+{temp_delta:.2f}°C)")
+    elif temp_delta >= 0.1:
+        score += 20
+        reasons.append(f"Mild temp rise (+{temp_delta:.2f}°C)")
+    else:
+        warnings.append(f"No significant temp shift ({temp_delta:+.2f}°C)")
+
+    # HRV drop → 25%
+    if hrv_delta <= -5:
+        score += 25
+        reasons.append(f"HRV suppression detected ({hrv_delta:.1f} ms)")
+    elif hrv_delta <= -2:
+        score += 12
+        reasons.append(f"Mild HRV drop ({hrv_delta:.1f} ms)")
+    else:
+        warnings.append(f"HRV stable or rising ({hrv_delta:+.1f} ms)")
+
+    # HR rise → 15%
+    if hr_delta >= 2:
+        score += 15
+        reasons.append(f"Heart rate elevation (+{hr_delta:.1f} bpm)")
+    elif hr_delta >= 1:
+        score += 7
+        reasons.append(f"Mild HR rise (+{hr_delta:.1f} bpm)")
+    else:
+        warnings.append(f"No HR elevation ({hr_delta:+.1f} bpm)")
+
+    # LH surge → 20%
+    if lh_result == "positive":
+        score += 20
+        reasons.append("LH surge confirmed")
+    elif lh_result == "borderline":
+        score += 10
+        reasons.append("LH borderline — rising")
+    else:
+        warnings.append("No LH surge detected")
+
+    # Stress penalty
+    stress_penalty = 0
+    if stress_level == "High":
+        stress_penalty = 10
+        warnings.append("High stress may suppress ovulation")
+    elif stress_level == "Medium":
+        stress_penalty = 5
+        warnings.append("Moderate stress noted")
+
+    final_score = max(0, round(score - stress_penalty, 1))
+
+    # ── Phase classification ──
+    if final_score >= 75 and lh_result == "positive":
+        phase   = "Ovulation Confirmed"
+        emoji   = "🌸"
+        color   = "green"
+    elif final_score >= 60:
+        phase   = "Ovulation Approaching"
+        emoji   = "⚡"
+        color   = "yellow"
+    elif final_score >= 35:
+        phase   = "Pre-Ovulatory"
+        emoji   = "🌀"
+        color   = "blue"
+    elif cycle_gap > 40 and lh_result == "negative" and hrv_delta <= -3:
+        phase   = "Anovulatory Pattern Detected"
+        emoji   = "⚠️"
+        color   = "red"
+    else:
+        phase   = "Follicular Phase"
+        emoji   = "🌱"
+        color   = "purple"
+
+    result = {
+        "phase":          phase,
+        "emoji":          emoji,
+        "color":          color,
+        "confidence":     final_score,
+        "reasons":        reasons,
+        "warnings":       warnings,
+        "deltas": {
+            "hr":   round(hr_delta, 1),
+            "hrv":  round(hrv_delta, 1),
+            "temp": round(temp_delta, 2)
+        },
+        "baseline": {
+            "hr":   round(baseline_hr, 1),
+            "hrv":  round(baseline_hrv, 1),
+            "temp": round(baseline_temp, 2)
+        }
+    }
+
+    print(f"✅ Phase: {phase} | Confidence: {final_score}%")
+    return jsonify(result), 200
 # ------------------------------
 # Run Server
 # ------------------------------
